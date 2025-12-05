@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>ScatterBuilder Pro Adaptive v5.0 Mobile</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', 'sans-serif'],
+                    },
+                    colors: {
+                        slate: { 850: '#1e293b' } // Custom dark
+                    },
+                    screens: {
+                        'xs': '400px', // Breakpoint extra small
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&display=swap');
+
+        /* Stili custom scrollbar */
+        .custom-scrollbar::-webkit-scrollbar { width: 5px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background-color: #cbd5e1; border-radius: 20px; }
+        
+        /* Fix per altezza mobile (dvh) */
+        .h-dvh { height: 100vh; height: 100dvh; }
+        
+        body { 
+            background-color: #f8fafc; 
+            overflow: hidden; 
+            overscroll-behavior: none; /* Previene bounce su iOS */
+        }
+    </style>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "react": "https://esm.sh/react@18.3.1?dev",
+            "react-dom/client": "https://esm.sh/react-dom@18.3.1/client?dev",
+            "d3": "https://esm.sh/d3@7.9.0?dev",
+            "framer-motion": "https://esm.sh/framer-motion@10.16.16?deps=react@18.3.1,react-dom@18.3.1&dev",
+            "lucide-react": "https://esm.sh/lucide-react@0.344.0?deps=react@18.3.1,react-dom@18.3.1&dev"
+        }
+    }
+    </script>
+    
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+        import React, { useState, useRef, useCallback, useMemo, useEffect, useLayoutEffect } from 'react';
+        import { createRoot } from 'react-dom/client';
+        import * as d3 from 'd3';
+        import { motion, AnimatePresence } from 'framer-motion';
+        import { 
+            Download, Settings2, Plus, X, Image as ImageIcon, 
+            ChevronLeft, Check, Maximize2, 
+            Move, ZoomIn, LayoutGrid, Type, ArrowUp, 
+            ArrowDown, ArrowLeft, ArrowRight, Menu, Anchor, Palette,
+            Save, RotateCcw, Upload, FileJson, Eye, EyeOff
+        } from 'lucide-react';
+
+        // --- HOOK: RESIZE OBSERVER STABILE ---
+        const useContainerDimensions = (myRef) => {
+            const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+
+            useLayoutEffect(() => {
+                const getDimensions = () => ({
+                    width: myRef.current.offsetWidth,
+                    height: myRef.current.offsetHeight
+                });
+
+                const handleResize = () => {
+                    const newDims = getDimensions();
+                    setDimensions(prev => {
+                        if (prev.width === newDims.width && prev.height === newDims.height) return prev;
+                        return newDims;
+                    });
+                };
+
+                if (myRef.current) handleResize();
+
+                const resizeObserver = new ResizeObserver(() => handleResize());
+                if (myRef.current) resizeObserver.observe(myRef.current);
+
+                return () => { if (myRef.current) resizeObserver.unobserve(myRef.current); };
+            }, [myRef]);
+
+            return dimensions;
+        };
+
+        // --- HOOK: LABEL COLLISION ---
+        const useLabelLayout = (data, xScale, yScale, showLabels, dotSize, draggedId, width, height) => {
+            const [positions, setPositions] = useState({});
+            useEffect(() => {
+                if (!showLabels || draggedId || width === 0) return;
+                const nodes = data.map(d => {
+                    const x = xScale(d.x);
+                    const y = yScale(d.y);
+                    return {
+                        id: d.id,
+                        fx: null, fy: null,
+                        targetX: x, targetY: y + dotSize + 12,
+                        x: x, y: y + dotSize + 12, 
+                        width: d.label.length * 7 + 20, height: 20
+                    };
+                });
+                const simulation = d3.forceSimulation(nodes)
+                    .force("x", d3.forceX(d => d.targetX).strength(0.3))
+                    .force("y", d3.forceY(d => d.targetY).strength(0.3))
+                    .force("collide", d3.forceCollide(d => Math.sqrt(d.width*d.width + d.height*d.height)/2 * 0.9).strength(1).iterations(2))
+                    .stop();
+                for (let i = 0; i < 120; ++i) simulation.tick();
+                const newPositions = {};
+                nodes.forEach(n => newPositions[n.id] = { x: n.x, y: n.y });
+                setPositions(newPositions);
+            }, [data, xScale, yScale, showLabels, dotSize, draggedId, width, height]);
+            return positions;
+        };
+
+        // --- UTILITY: TEXT WRAPPING ---
+        const wrapTextLogic = (text, maxChars) => {
+            if (!text) return [];
+            const words = text.split(' ');
+            const lines = [];
+            let currentLine = words[0];
+
+            for (let i = 1; i < words.length; i++) {
+                if (currentLine.length + 1 + words[i].length <= maxChars) {
+                    currentLine += ' ' + words[i];
+                } else {
+                    lines.push(currentLine);
+                    currentLine = words[i];
+                }
+            }
+            lines.push(currentLine);
+            return lines;
+        };
+
+        const MultilineAxisLabel = ({ text, x, y, maxChars, anchor, alignmentMode, fontSize, fill }) => {
+            const lines = wrapTextLogic(text, maxChars);
+            const lineHeight = 1.2; 
+
+            let startDy = 0;
+            if (alignmentMode === 'middle') {
+                startDy = -((lines.length - 1) * lineHeight) / 2;
+            } else if (alignmentMode === 'bottom-up') {
+                startDy = -((lines.length - 1) * lineHeight);
+            } 
+
+            return (
+                <text x={x} y={y} textAnchor={anchor} fill={fill} style={{fontSize: `${fontSize}px`, fontWeight: 'bold', fontFamily: 'Inter, sans-serif'}}>
+                    {lines.map((line, i) => (
+                        <tspan x={x} dy={i === 0 ? `${startDy}em` : `${lineHeight}em`} key={i}>
+                            {line}
+                        </tspan>
+                    ))}
+                </text>
+            );
+        };
+
+        // --- UTILITY: EXPORT ---
+        const downloadSvgAsPng = (svgElement, width, height, filename) => {
+            return new Promise((resolve, reject) => {
+                try {
+                    const clone = svgElement.cloneNode(true);
+                    const exportWidth = width;
+                    const exportHeight = height;
+                    clone.setAttribute('width', exportWidth);
+                    clone.setAttribute('height', exportHeight);
+                    const elements = clone.querySelectorAll('text');
+                    elements.forEach(el => el.style.fontFamily = "Inter, ui-sans-serif, system-ui, sans-serif");
+                    
+                    const serializer = new XMLSerializer();
+                    const svgString = serializer.serializeToString(clone);
+                    const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+                    const url = URL.createObjectURL(svgBlob);
+                    const img = new Image();
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        const scaleFactor = 2; 
+                        canvas.width = exportWidth * scaleFactor;
+                        canvas.height = exportHeight * scaleFactor;
+                        const ctx = canvas.getContext('2d');
+                        ctx.fillStyle = '#ffffff';
+                        ctx.fillRect(0, 0, canvas.width, canvas.height);
+                        ctx.scale(scaleFactor, scaleFactor);
+                        ctx.drawImage(img, 0, 0, exportWidth, exportHeight);
+                        try {
+                            const pngUrl = canvas.toDataURL('image/png');
+                            const link = document.createElement('a');
+                            link.download = filename;
+                            link.href = pngUrl;
+                            link.click();
+                            URL.revokeObjectURL(url);
+                            resolve();
+                        } catch (e) { reject(e); }
+                    };
+                    img.onerror = reject;
+                    img.src = url;
+                } catch (err) { reject(err); }
+            });
+        };
+
+        // --- COMPONENTI UI ---
+        const SimpleImageCropper = ({ imageSrc, onCancel, onSave }) => {
+            const [zoom, setZoom] = useState(1);
+            const [pan, setPan] = useState({ x: 0, y: 0 });
+            const [isDragging, setIsDragging] = useState(false);
+            const startPan = useRef({ x: 0, y: 0 });
+            const imgRef = useRef(null);
+            const handleMouseDown = (e) => { setIsDragging(true); startPan.current = { x: e.clientX - pan.x, y: e.clientY - pan.y }; };
+            const handleMouseMove = (e) => { if (!isDragging) return; e.preventDefault(); setPan({ x: e.clientX - startPan.current.x, y: e.clientY - startPan.current.y }); };
+            const handleMouseUp = () => setIsDragging(false);
+            const handleSave = () => {
+                const canvas = document.createElement('canvas');
+                const size = 300; canvas.width = size; canvas.height = size;
+                const ctx = canvas.getContext('2d');
+                ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, size, size);
+                const img = imgRef.current;
+                ctx.save();
+                ctx.translate(size / 2, size / 2); ctx.translate(pan.x, pan.y); ctx.scale(zoom, zoom);
+                const aspect = img.naturalWidth / img.naturalHeight;
+                let drawW, drawH;
+                if (aspect > 1) { drawH = size; drawW = size * aspect; } else { drawW = size; drawH = size / aspect; }
+                ctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH);
+                ctx.restore();
+                onSave(canvas.toDataURL('image/png'));
+            };
+            return (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
+                    <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-white w-full max-w-md rounded-2xl overflow-hidden shadow-2xl flex flex-col ring-1 ring-slate-900/5">
+                        <div className="p-4 bg-slate-900 text-white flex justify-between items-center">
+                            <h3 className="font-bold flex items-center gap-2"><Maximize2 size={18}/> Ritaglia Immagine</h3>
+                            <button onClick={onCancel}><X size={20} className="text-slate-400 hover:text-white transition"/></button>
+                        </div>
+                        <div className="relative w-full h-[350px] bg-slate-100 overflow-hidden cursor-move flex items-center justify-center"
+                            onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}
+                            onTouchStart={(e)=>{setIsDragging(true); const t=e.touches[0]; startPan.current={x:t.clientX-pan.x,y:t.clientY-pan.y}}}
+                            onTouchMove={(e)=>{if(!isDragging)return; e.preventDefault(); const t=e.touches[0]; setPan({x:t.clientX-startPan.current.x,y:t.clientY-startPan.current.y})}}
+                            onTouchEnd={()=>setIsDragging(false)}
+                        >
+                            <div className="absolute inset-0 pointer-events-none border border-slate-200 z-0" style={{ backgroundImage: 'radial-gradient(#cbd5e1 1px, transparent 1px)', backgroundSize: '20px 20px' }}></div>
+                            <div className="absolute inset-0 pointer-events-none z-20 flex items-center justify-center">
+                                <div className="w-[300px] h-[300px] rounded-full border-4 border-indigo-500/50 shadow-[0_0_0_9999px_rgba(0,0,0,0.5)]"></div>
+                            </div>
+                            <img ref={imgRef} src={imageSrc} draggable={false} className="max-w-none relative z-10 select-none" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, height: '300px', width: 'auto' }} />
+                        </div>
+                        <div className="p-6 bg-white border-t border-slate-200 space-y-6">
+                            <input type="range" value={zoom} min={0.5} max={3} step={0.1} onChange={(e) => setZoom(parseFloat(e.target.value))} className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600" />
+                            <div className="flex gap-3">
+                                <button onClick={onCancel} className="flex-1 py-2.5 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-slate-200 transition">Annulla</button>
+                                <button onClick={handleSave} className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 shadow-lg shadow-indigo-200 transition">Salva</button>
+                            </div>
+                        </div>
+                    </motion.div>
+                </div>
+            );
+        };
+
+        // --- CONFIGURAZIONE DEFAULT ---
+        const DEFAULT_CONFIG = {
+            title: "Analisi",
+            topLabel: "Concetto 1", bottomLabel: "Concetto 2",
+            leftLabel: "Concetto 3", rightLabel: "Concetto 4",
+            minX: 0, maxX: 100, minY: 0, maxY: 100, dotSize: 10, showLabels: true, quadrantFontSize: 10,
+            titleColor: "#1e293b", axisColor: "#64748b", axisLabelColor: "#475569", quadrantTextColor: "#94a3b8",
+            q1: { label: "Quadrante 1", color: "#ffffff", textColor: "#94a3b8", position: 'center' },
+            q2: { label: "Quadrante 2", color: "#ffffff", textColor: "#94a3b8", position: 'center' },
+            q3: { label: "Quadrante 3", color: "#ffffff", textColor: "#94a3b8", position: 'center' },
+            q4: { label: "Quadrante 4", color: "#ffffff", textColor: "#94a3b8", position: 'center' }
+        };
+
+        const DEFAULT_DATA = [
+            { id: 1, x: 25, y: 75, label: "A", desc: "Elemento A", color: "#ef4444", img: null },
+            { id: 2, x: 75, y: 75, label: "B", desc: "Elemento B", color: "#22c55e", img: null },
+            { id: 3, x: 25, y: 25, label: "C", desc: "Elemento C", color: "#f97316", img: null },
+            { id: 4, x: 75, y: 25, label: "D", desc: "Elemento D", color: "#3b82f6", img: null },
+        ];
+
+        function ScatterBuilder() {
+            const [config, setConfig] = useState(DEFAULT_CONFIG);
+            const [data, setData] = useState(DEFAULT_DATA);
+            const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+            const [editorState, setEditorState] = useState({ isOpen: false, pointId: null, imageSrc: null });
+            const [hoveredPoint, setHoveredPoint] = useState(null);
+            const [draggedId, setDraggedId] = useState(null);
+            const [isCompactMode, setIsCompactMode] = useState(false); // NUOVO STATO PER MODALITÀ COMPATTA
+            
+            const chartWrapperRef = useRef(null);
+            const chartContainerRef = useRef(null);
+            const svgRef = useRef(null);
+            const fileInputRef = useRef(null); 
+            
+            const { width, height } = useContainerDimensions(chartWrapperRef);
+
+            const isMobile = width < 600;
+
+            // --- MARGINI INTELLIGENTI ---
+            const margins = useMemo(() => {
+                // Se Modalità Compatta è attiva, margini minimi per massimizzare matrice
+                if (isCompactMode) {
+                    return { top: 20, right: 20, bottom: 20, left: 20 };
+                }
+
+                // Logica standard ma ottimizzata per evitare lo schiacciamento su mobile
+                // Riduciamo il minimo hard-coded da 140 a 90 per schermi stretti
+                const minSide = isMobile ? 80 : 140; 
+                const minTop = isMobile ? 90 : 130;
+                
+                const sideMargin = Math.min(Math.max(width * 0.15, minSide), 220);
+                
+                return { 
+                    top: Math.max(minTop, sideMargin * 0.8), 
+                    right: sideMargin, 
+                    bottom: Math.max(80, sideMargin * 0.6), 
+                    left: sideMargin 
+                };
+            }, [width, isCompactMode, isMobile]);
+
+            const xScale = useMemo(() => d3.scaleLinear().domain([config.minX, config.maxX]).range([margins.left, width - margins.right]), [config.minX, config.maxX, width, margins]);
+            const yScale = useMemo(() => d3.scaleLinear().domain([config.minY, config.maxY]).range([height - margins.bottom, margins.top]), [config.minY, config.maxY, height, margins]);
+            const midX = xScale((config.minX + config.maxX) / 2);
+            const midY = yScale((config.minY + config.maxY) / 2);
+            const labelPositions = useLabelLayout(data, xScale, yScale, config.showLabels, config.dotSize, draggedId, width, height);
+
+            const handlePointerDown = (e, pointId) => { e.preventDefault(); e.stopPropagation(); setDraggedId(pointId); setHoveredPoint(null); };
+            const handleSvgPointerMove = (e) => {
+                if (!draggedId) return;
+                const mouseX = e.nativeEvent.offsetX; 
+                const mouseY = e.nativeEvent.offsetY;
+                let newDataX = xScale.invert(mouseX); let newDataY = yScale.invert(mouseY);
+                newDataX = Math.max(config.minX, Math.min(config.maxX, newDataX)); newDataY = Math.max(config.minY, Math.min(config.maxY, newDataY));
+                setData(prev => prev.map(p => p.id === draggedId ? { ...p, x: Math.round(newDataX*10)/10, y: Math.round(newDataY*10)/10 } : p));
+            };
+            const handleSvgPointerUp = () => setDraggedId(null);
+            useEffect(() => { window.addEventListener('pointerup', handleSvgPointerUp); return () => window.removeEventListener('pointerup', handleSvgPointerUp); }, []);
+            
+            const handleAddPoint = () => setData([...data, { id: Date.now(), x: 50, y: 50, label: "Nuovo", desc: "", color: "#6366f1", img: null }]);
+            const handleUpdatePoint = (id, field, value) => setData(data.map(d => d.id === id ? { ...d, [field]: value } : d));
+            const handleDeletePoint = (id) => setData(data.filter(d => d.id !== id));
+            const handleUpdateConfig = (field, value) => setConfig(prev => ({ ...prev, [field]: value }));
+            const handleUpdateQuadrant = (key, field, value) => setConfig(prev => ({ ...prev, [key]: { ...prev[key], [field]: value } }));
+            const onSelectFile = (e, pointId) => { if (e.target.files && e.target.files.length > 0) { const reader = new FileReader(); reader.onload = () => setEditorState({ isOpen: true, pointId, imageSrc: reader.result }); reader.readAsDataURL(e.target.files[0]); } };
+            const onCropSave = (img) => { handleUpdatePoint(editorState.pointId, 'img', img); setEditorState({ isOpen: false, pointId: null, imageSrc: null }); };
+            
+            const handleDownloadPng = async () => { const svg = chartContainerRef.current.querySelector('svg'); if(svg) await downloadSvgAsPng(svg, width, height, `chart-${Date.now()}.png`); };
+            
+            const handleReset = () => {
+                if(confirm("Sei sicuro di voler resettare? Tutti i dati non salvati andranno persi.")) {
+                    setConfig(DEFAULT_CONFIG);
+                    setData(DEFAULT_DATA);
+                }
+            };
+
+            const handleSaveProject = () => {
+                const projectData = { version: "1.0", date: new Date().toISOString(), config: config, data: data };
+                const blob = new Blob([JSON.stringify(projectData, null, 2)], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a'); link.download = `scatter-project-${Date.now()}.json`; link.href = url; link.click(); URL.revokeObjectURL(url);
+            };
+
+            const handleLoadProject = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    try { const loaded = JSON.parse(event.target.result); if(loaded.config) setConfig(loaded.config); if(loaded.data) setData(loaded.data); } catch (err) { alert("Errore nel caricamento."); }
+                    e.target.value = null;
+                };
+                reader.readAsText(file);
+            };
+
+            const getQuadrantLabelProps = (quadrantKey, x1, y1, x2, y2) => {
+                const padding = isMobile ? 15 : 30; const pos = config[quadrantKey].position || 'center';
+                let x, y, textAnchor, dominantBaseline;
+                switch (pos) {
+                    case 'top-left': x = x1 + padding; y = y1 + padding; textAnchor = "start"; dominantBaseline = "hanging"; break;
+                    case 'top-right': x = x2 - padding; y = y1 + padding; textAnchor = "end"; dominantBaseline = "hanging"; break;
+                    case 'bottom-left': x = x1 + padding; y = y2 - padding; textAnchor = "start"; dominantBaseline = "auto"; break;
+                    case 'bottom-right': x = x2 - padding; y = y2 - padding; textAnchor = "end"; dominantBaseline = "auto"; break;
+                    case 'center': default: x = x1 + (x2 - x1) / 2; y = y1 + (y2 - y1) / 2; textAnchor = "middle"; dominantBaseline = "middle"; break;
+                }
+                return { x, y, textAnchor, dominantBaseline };
+            };
+
+            return (
+                <div className="flex flex-col md:flex-row h-dvh w-full bg-slate-50 font-sans text-slate-800 selection:bg-indigo-100 relative overflow-hidden">
+                    {/* Tooltip */}
+                    {hoveredPoint && !draggedId && (
+                        <div className="absolute z-[100] pointer-events-none bg-slate-800/95 text-white p-3 rounded-lg shadow-xl backdrop-blur-md border border-slate-600/50 transition-opacity transform -translate-x-1/2 mt-2"
+                             style={{ left: hoveredPoint.screenX, top: hoveredPoint.screenY + 10, minWidth: '140px', textAlign: 'center' }}>
+                            {hoveredPoint.data.img && config.dotSize < 12 && (
+                                <img src={hoveredPoint.data.img} className="w-12 h-12 rounded-full object-cover mx-auto mb-2 border-2 border-white/20 shadow-sm" alt="Preview" />
+                            )}
+                            <div className="font-semibold text-sm">{hoveredPoint.data.label}</div>
+                            {hoveredPoint.data.desc && <div className="text-xs text-slate-300 mt-1 leading-tight border-t border-slate-600/50 pt-1">{hoveredPoint.data.desc}</div>}
+                        </div>
+                    )}
+                    
+                    {editorState.isOpen && <SimpleImageCropper imageSrc={editorState.imageSrc} onCancel={() => setEditorState({...editorState, isOpen: false})} onSave={onCropSave} />}
+                    <input type="file" ref={fileInputRef} accept=".json" className="hidden" onChange={handleLoadProject} />
+
+                    <AnimatePresence mode="wait">
+                        {isSidebarOpen && (
+                            <motion.div initial={{ x: -100, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: -420, opacity: 0 }} transition={{ type: "spring", stiffness: 300, damping: 30 }}
+                                className="absolute md:relative inset-0 z-50 md:z-auto w-full md:w-[400px] bg-white shadow-2xl flex flex-col border-r border-slate-200 h-full flex-shrink-0">
+                                
+                                {/* HEADER SIDEBAR - FISSO */}
+                                <div className="flex-none p-5 border-b border-slate-100 bg-white z-10 flex justify-between items-center">
+                                    <h2 className="font-bold text-lg flex items-center gap-2 text-slate-800"><Settings2 size={20} className="text-indigo-600"/> Configuratore</h2>
+                                    <button onClick={() => setIsSidebarOpen(false)} className="p-2 hover:bg-slate-100 rounded-full transition text-slate-400 hover:text-slate-600"><ChevronLeft size={20}/></button>
+                                </div>
+
+                                {/* CONTENUTO SCROLLABILE (FLEX-1) */}
+                                <div className="flex-1 overflow-y-auto p-6 space-y-8 custom-scrollbar">
+                                    {/* CONFIG CONTROLS */}
+                                    <section className="space-y-4">
+                                        <div className="flex items-center gap-2 text-slate-400 font-bold text-xs uppercase tracking-widest border-b border-slate-100 pb-2"><Move size={12}/> Assi & Testi</div>
+                                        
+                                        {/* NUOVO: MODALITÀ COMPATTA TOGGLE */}
+                                        <div onClick={() => setIsCompactMode(!isCompactMode)} className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-all ${isCompactMode ? 'bg-indigo-50 border-indigo-200' : 'bg-white border-slate-200'}`}>
+                                            <div className="flex items-center gap-3">
+                                                {isCompactMode ? <EyeOff size={18} className="text-indigo-600"/> : <Eye size={18} className="text-slate-400"/>}
+                                                <div className="flex flex-col">
+                                                    <span className={`text-sm font-bold ${isCompactMode ? 'text-indigo-800' : 'text-slate-700'}`}>Modalità Compatta</span>
+                                                    <span className="text-[10px] text-slate-400">Nascondi titoli per più spazio</span>
+                                                </div>
+                                            </div>
+                                            <div className={`w-10 h-6 rounded-full p-1 transition-colors duration-300 ${isCompactMode ? 'bg-indigo-600' : 'bg-slate-200'}`}>
+                                                <div className={`w-4 h-4 rounded-full bg-white shadow-sm transform transition-transform duration-300 ${isCompactMode ? 'translate-x-4' : 'translate-x-0'}`} />
+                                            </div>
+                                        </div>
+
+                                        <div className={`space-y-4 transition-opacity duration-300 ${isCompactMode ? 'opacity-50 pointer-events-none grayscale' : ''}`}>
+                                            <div className="flex gap-3 items-center">
+                                                <div className="flex-1 space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase">Titolo</label><input type="text" value={config.title} onChange={e => handleUpdateConfig('title', e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-lg bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-100 outline-none text-sm font-semibold transition"/></div>
+                                                <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase">Colore</label><input type="color" value={config.titleColor} onChange={e => handleUpdateConfig('titleColor', e.target.value)} className="h-10 w-10 rounded-lg cursor-pointer border border-slate-200 p-0.5 bg-white"/></div>
+                                            </div>
+                                            <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200/60 flex flex-col items-center gap-3 relative">
+                                                <div className="flex flex-col items-center w-full space-y-1"><ArrowUp size={14} className="text-slate-400"/><input type="text" value={config.topLabel} onChange={e=>handleUpdateConfig('topLabel',e.target.value)} className="w-3/4 text-center p-1.5 text-xs border border-slate-200 rounded-md shadow-sm focus:ring-1 focus:ring-indigo-500 outline-none"/></div>
+                                                <div className="flex w-full gap-2 items-center justify-between">
+                                                    <div className="flex flex-col items-center w-[40%] space-y-1"><input type="text" value={config.leftLabel} onChange={e=>handleUpdateConfig('leftLabel',e.target.value)} className="w-full text-center p-1.5 text-xs border border-slate-200 rounded-md shadow-sm focus:ring-1 focus:ring-indigo-500 outline-none"/><ArrowLeft size={14} className="text-slate-400"/></div>
+                                                    <div className="flex flex-col items-center justify-center p-1.5 bg-white rounded-full shadow-sm border border-slate-200"><input type="color" value={config.axisLabelColor} onChange={e=>handleUpdateConfig('axisLabelColor',e.target.value)} className="w-5 h-5 rounded-full cursor-pointer border-none p-0"/></div>
+                                                    <div className="flex flex-col items-center w-[40%] space-y-1"><input type="text" value={config.rightLabel} onChange={e=>handleUpdateConfig('rightLabel',e.target.value)} className="w-full text-center p-1.5 text-xs border border-slate-200 rounded-md shadow-sm focus:ring-1 focus:ring-indigo-500 outline-none"/><ArrowRight size={14} className="text-slate-400"/></div>
+                                                </div>
+                                                <div className="flex flex-col items-center w-full space-y-1"><input type="text" value={config.bottomLabel} onChange={e=>handleUpdateConfig('bottomLabel',e.target.value)} className="w-3/4 text-center p-1.5 text-xs border border-slate-200 rounded-md shadow-sm focus:ring-1 focus:ring-indigo-500 outline-none"/><ArrowDown size={14} className="text-slate-400"/></div>
+                                            </div>
+                                        </div>
+                                        
+                                        <div className="grid grid-cols-2 gap-3">
+                                            <div className="flex items-center justify-between bg-white p-3 rounded-xl border border-slate-200"><span className="text-[10px] font-bold uppercase text-slate-500">Assi</span><input type="color" value={config.axisColor} onChange={e => handleUpdateConfig('axisColor', e.target.value)} className="w-6 h-6 rounded cursor-pointer border-none p-0" /></div>
+                                            <div className="flex items-center justify-between bg-white p-3 rounded-xl border border-slate-200 cursor-pointer hover:border-indigo-300 transition" onClick={() => handleUpdateConfig('showLabels', !config.showLabels)}><span className="text-[10px] font-bold uppercase text-slate-500">Etichette</span><div className={`w-9 h-5 rounded-full p-0.5 transition-colors duration-300 ${config.showLabels ? 'bg-indigo-500' : 'bg-slate-200'}`}><div className={`w-4 h-4 rounded-full bg-white shadow-md transform transition-transform duration-300 ${config.showLabels ? 'translate-x-4' : 'translate-x-0'}`} /></div></div>
+                                        </div>
+                                        <div className="space-y-2 pt-2"><div className="flex justify-between"><span className="text-[10px] font-bold uppercase text-slate-400">Dimensione Pallini</span><span className="text-[10px] font-bold text-indigo-600">{config.dotSize}px</span></div><input type="range" min="2" max="60" value={config.dotSize} onChange={e=>handleUpdateConfig('dotSize', Number(e.target.value))} className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"/></div>
+                                    </section>
+                                    
+                                    <section className="space-y-4">
+                                        <div className="flex items-center gap-2 text-slate-400 font-bold text-xs uppercase tracking-widest border-b border-slate-100 pb-2"><LayoutGrid size={12}/> Quadranti</div>
+                                        <div className="space-y-3">
+                                            <div className="flex items-center justify-between"><span className="text-[10px] font-bold uppercase text-slate-400">Dimensione Testo</span><span className="text-[10px] font-bold text-indigo-600">{config.quadrantFontSize}px</span></div>
+                                            <input type="range" min="10" max="60" value={config.quadrantFontSize} onChange={e=>handleUpdateConfig('quadrantFontSize', Number(e.target.value))} className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"/>
+                                        </div>
+                                        <div className="grid grid-cols-1 gap-3">
+                                            {[{k:'q2',t:'Alto Sx'},{k:'q1',t:'Alto Dx'},{k:'q3',t:'Basso Sx'},{k:'q4',t:'Basso Dx'}].map(q=>(
+                                                <div key={q.k} className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm space-y-2">
+                                                    <div className="flex justify-between items-center border-b border-slate-100 pb-2 mb-2">
+                                                        <span className="text-[10px] font-bold text-indigo-600 uppercase tracking-wide">{q.t}</span>
+                                                        <div className="flex gap-3">
+                                                            <div className="relative flex items-center justify-center w-6 h-6 rounded hover:bg-slate-100 transition cursor-pointer overflow-hidden" title="Posizione Testo">
+                                                                <Anchor size={14} className="text-slate-400"/>
+                                                                <select value={config[q.k].position} onChange={e=>handleUpdateQuadrant(q.k,'position',e.target.value)} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer">
+                                                                    <option value="center">Centro</option><option value="top-left">Alto Sx</option><option value="top-right">Alto Dx</option><option value="bottom-left">Basso Sx</option><option value="bottom-right">Basso Dx</option>
+                                                                </select>
+                                                            </div>
+                                                            <div className="flex items-center gap-1 cursor-pointer group" title="Colore Testo">
+                                                                <Type size={14} className="text-slate-400 group-hover:text-slate-600"/>
+                                                                <input type="color" value={config[q.k].textColor} onChange={e=>handleUpdateQuadrant(q.k,'textColor',e.target.value)} className="w-5 h-5 rounded cursor-pointer border-none p-0 bg-transparent"/>
+                                                            </div>
+                                                            <div className="flex items-center gap-1 cursor-pointer group" title="Sfondo Quadrante">
+                                                                <Palette size={14} className="text-slate-400 group-hover:text-slate-600"/>
+                                                                <input type="color" value={config[q.k].color} onChange={e=>handleUpdateQuadrant(q.k,'color',e.target.value)} className="w-5 h-5 rounded cursor-pointer border-none p-0 bg-transparent"/>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    <input type="text" value={config[q.k].label} onChange={e=>handleUpdateQuadrant(q.k,'label',e.target.value)} className="w-full text-sm font-medium border border-slate-100 rounded p-1.5 focus:border-indigo-500 outline-none bg-slate-50 transition" placeholder={`Nome ${q.t}...`}/>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </section>
+
+                                    <section className="space-y-4">
+                                        <div className="flex justify-between items-end border-b border-slate-100 pb-2"><span className="text-slate-400 font-bold text-xs uppercase tracking-widest flex items-center gap-2"><ImageIcon size={12}/> Elementi ({data.length})</span><button onClick={handleAddPoint} className="text-indigo-600 bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-lg text-[10px] font-bold flex items-center gap-1 hover:bg-indigo-100 transition shadow-sm"><Plus size={12}/> AGGIUNGI</button></div>
+                                        <div className="space-y-3">
+                                            <AnimatePresence initial={false}>
+                                                {data.map(point => (
+                                                    <motion.div key={point.id} initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} exit={{opacity:0, height:0}} className={`bg-white border rounded-xl p-3 shadow-sm hover:shadow-md transition-all group ${draggedId === point.id ? 'border-indigo-500 ring-1 ring-indigo-500' : 'border-slate-200'}`}>
+                                                        <div className="flex gap-3 items-start">
+                                                            <div className="relative w-12 h-12 flex-shrink-0 group/img cursor-pointer shadow-inner rounded-full bg-slate-50">
+                                                                <input type="file" accept="image/*" onChange={e=>onSelectFile(e, point.id)} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20"/>
+                                                                <div className={`w-full h-full rounded-full overflow-hidden border-2 transition-all duration-300 ${point.img?'border-transparent':'border-slate-200 border-dashed'} flex items-center justify-center bg-white`}>
+                                                                    {point.img ? <img src={point.img} className="w-full h-full object-cover"/> : <ImageIcon size={16} className="text-slate-300"/>}
+                                                                </div>
+                                                            </div>
+                                                            <div className="flex-1 space-y-2">
+                                                                <div className="flex justify-between gap-2">
+                                                                    <input type="text" value={point.label} onChange={e=>handleUpdatePoint(point.id,'label',e.target.value)} className="flex-1 text-sm font-bold text-slate-800 bg-transparent border-b border-slate-100 focus:border-indigo-500 outline-none px-1" placeholder="Nome..."/>
+                                                                    <input type="color" value={point.color} onChange={e=>handleUpdatePoint(point.id,'color',e.target.value)} className="w-5 h-5 rounded-full overflow-hidden border-none p-0 cursor-pointer shadow-sm"/>
+                                                                </div>
+                                                                <input type="text" value={point.desc} onChange={e=>handleUpdatePoint(point.id,'desc',e.target.value)} className="w-full text-xs text-slate-500 bg-slate-50 rounded px-2 py-1 border border-transparent focus:border-indigo-200 focus:bg-white outline-none transition" placeholder="Descrizione..."/>
+                                                            </div>
+                                                            <button onClick={()=>handleDeletePoint(point.id)} className="text-slate-300 hover:text-red-500 p-1 rounded hover:bg-red-50 transition"><X size={14}/></button>
+                                                        </div>
+                                                    </motion.div>
+                                                ))}
+                                            </AnimatePresence>
+                                        </div>
+                                    </section>
+                                </div>
+
+                                {/* FOOTER SIDEBAR - FISSO IN BASSO */}
+                                <div className="flex-none p-5 border-t border-slate-200 bg-white z-20 space-y-3 pb-safe">
+                                    <div className="grid grid-cols-3 gap-2">
+                                        <button onClick={handleReset} className="flex flex-col items-center justify-center p-2 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 border border-red-100 transition gap-1" title="Reset">
+                                            <RotateCcw size={16} />
+                                            <span className="text-[10px] font-bold uppercase">Reset</span>
+                                        </button>
+                                        <button onClick={() => fileInputRef.current.click()} className="flex flex-col items-center justify-center p-2 rounded-lg bg-slate-50 text-slate-600 hover:bg-slate-100 border border-slate-200 transition gap-1" title="Carica">
+                                            <Upload size={16} />
+                                            <span className="text-[10px] font-bold uppercase">Carica</span>
+                                        </button>
+                                        <button onClick={handleSaveProject} className="flex flex-col items-center justify-center p-2 rounded-lg bg-slate-50 text-slate-600 hover:bg-slate-100 border border-slate-200 transition gap-1" title="Salva">
+                                            <Save size={16} />
+                                            <span className="text-[10px] font-bold uppercase">Salva</span>
+                                        </button>
+                                    </div>
+                                    <button onClick={handleDownloadPng} className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow-lg shadow-indigo-200 font-bold text-sm flex justify-center items-center gap-2 transition active:scale-95 tracking-wide"><Download size={16}/> SCARICA PNG</button>
+                                </div>
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
+
+                    {/* AREA GRAFICO */}
+                    <div className="flex-1 relative flex flex-col overflow-hidden w-full h-full" ref={chartWrapperRef}>
+                        {!isSidebarOpen && <motion.button initial={{scale:0}} animate={{scale:1}} onClick={()=>setIsSidebarOpen(true)} className="absolute top-6 left-6 z-30 bg-white p-3 rounded-full shadow-xl border border-slate-200 text-indigo-600 hover:scale-110 transition"><Menu size={24}/></motion.button>}
+                        <div className="flex-1 flex items-center justify-center w-full h-full">
+                            <motion.div layout ref={chartContainerRef} className="bg-white shadow-2xl relative overflow-hidden ring-1 ring-slate-900/5 rounded-sm" 
+                                style={{
+                                    width: width > 0 ? width - (isMobile ? 10 : 60) : '100%', // Ridotto margine wrapper su mobile
+                                    height: height > 0 ? height - (isMobile ? 10 : 60) : '100%',
+                                    transition: 'all 0.3s ease-out'
+                                }}>
+                                <div className="absolute inset-0 flex flex-col pointer-events-none">
+                                    <div className="flex-1 w-full h-full relative">
+                                        {width > 0 && height > 0 && (
+                                            <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} className="w-full h-full overflow-visible select-none pointer-events-auto" xmlns="http://www.w3.org/2000/svg" onPointerMove={handleSvgPointerMove} onPointerUp={handleSvgPointerUp} onPointerLeave={handleSvgPointerUp}>
+                                                <defs>
+                                                    {data.map(p => (<pattern key={`pat-${p.id}`} id={`img-${p.id}`} height="100%" width="100%" patternContentUnits="objectBoundingBox">{p.img ? <image href={p.img} x="0" y="0" width="1" height="1" preserveAspectRatio="none"/> : <rect width="1" height="1" fill="#f1f5f9"/>}</pattern>))}
+                                                    <filter id="dropShadow" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="4" stdDeviation="4" floodColor="#000" floodOpacity="0.1"/></filter>
+                                                </defs>
+                                                
+                                                {/* Titolo Ancorato in Alto - NASCOSTO IN MODALITÀ COMPATTA */}
+                                                {!isCompactMode && (
+                                                    <text x={width / 2} y={isMobile ? 30 : 40} textAnchor="middle" dominantBaseline="middle" 
+                                                        style={{fontSize: isMobile ? '20px' : '28px', fontWeight: 900, fontFamily: 'Inter, sans-serif', textTransform: 'uppercase', fill: config.titleColor}}>
+                                                        {config.title}
+                                                    </text>
+                                                )}
+
+                                                {/* Quadranti */}
+                                                <rect x={margins.left} y={margins.top} width={midX - margins.left} height={midY - margins.top} fill={config.q2.color} />
+                                                <rect x={midX} y={margins.top} width={width - margins.right - midX} height={midY - margins.top} fill={config.q1.color} />
+                                                <rect x={margins.left} y={midY} width={midX - margins.left} height={height - margins.bottom - midY} fill={config.q3.color} />
+                                                <rect x={midX} y={midY} width={width - margins.right - midX} height={height - margins.bottom - midY} fill={config.q4.color} />
+                                                <rect x={margins.left} y={margins.top} width={width - margins.left - margins.right} height={height - margins.top - margins.bottom} fill="none" stroke="#e2e8f0" strokeWidth="1" />
+
+                                                {/* Assi */}
+                                                <line x1={midX} x2={midX} y1={margins.top} y2={height - margins.bottom} stroke={config.axisColor} strokeWidth="3" strokeLinecap="round" />
+                                                <path d={`M ${midX - 6} ${margins.top + 10} L ${midX} ${margins.top} L ${midX + 6} ${margins.top + 10}`} fill="none" stroke={config.axisColor} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/>
+                                                <path d={`M ${midX - 6} ${height - margins.bottom - 10} L ${midX} ${height - margins.bottom} L ${midX + 6} ${height - margins.bottom - 10}`} fill="none" stroke={config.axisColor} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/>
+                                                <line x1={margins.left} x2={width - margins.right} y1={midY} y2={midY} stroke={config.axisColor} strokeWidth="3" strokeLinecap="round" />
+                                                <path d={`M ${margins.left + 10} ${midY - 6} L ${margins.left} ${midY} L ${margins.left + 10} ${midY + 6}`} fill="none" stroke={config.axisColor} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/>
+                                                <path d={`M ${width - margins.right - 10} ${midY - 6} L ${width - margins.right} ${midY} L ${width - margins.right - 10} ${midY + 6}`} fill="none" stroke={config.axisColor} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/>
+
+                                                {/* Nomi Quadranti */}
+                                                {(() => { const props = getQuadrantLabelProps('q2', margins.left, margins.top, midX, midY); return (<text x={props.x} y={props.y} textAnchor={props.textAnchor} dominantBaseline={props.dominantBaseline} fill={config.q2.textColor} style={{fontSize: `${config.quadrantFontSize}px`, fontWeight: 800, fontFamily: 'Inter, sans-serif', opacity: 0.3, pointerEvents: 'none'}}>{config.q2.label}</text>); })()}
+                                                {(() => { const props = getQuadrantLabelProps('q1', midX, margins.top, width - margins.right, midY); return (<text x={props.x} y={props.y} textAnchor={props.textAnchor} dominantBaseline={props.dominantBaseline} fill={config.q1.textColor} style={{fontSize: `${config.quadrantFontSize}px`, fontWeight: 800, fontFamily: 'Inter, sans-serif', opacity: 0.3, pointerEvents: 'none'}}>{config.q1.label}</text>); })()}
+                                                {(() => { const props = getQuadrantLabelProps('q3', margins.left, midY, midX, height - margins.bottom); return (<text x={props.x} y={props.y} textAnchor={props.textAnchor} dominantBaseline={props.dominantBaseline} fill={config.q3.textColor} style={{fontSize: `${config.quadrantFontSize}px`, fontWeight: 800, fontFamily: 'Inter, sans-serif', opacity: 0.3, pointerEvents: 'none'}}>{config.q3.label}</text>); })()}
+                                                {(() => { const props = getQuadrantLabelProps('q4', midX, midY, width - margins.right, height - margins.bottom); return (<text x={props.x} y={props.y} textAnchor={props.textAnchor} dominantBaseline={props.dominantBaseline} fill={config.q4.textColor} style={{fontSize: `${config.quadrantFontSize}px`, fontWeight: 800, fontFamily: 'Inter, sans-serif', opacity: 0.3, pointerEvents: 'none'}}>{config.q4.label}</text>); })()}
+
+                                                {/* Label Assi Multilinea - NASCOSTI IN MODALITÀ COMPATTA */}
+                                                {!isCompactMode && (
+                                                    <g>
+                                                        <MultilineAxisLabel text={config.topLabel} x={midX} y={margins.top - 25} maxChars={isMobile ? 18 : 25} anchor="middle" alignmentMode="bottom-up" fontSize={isMobile ? 14 : 18} fill={config.axisLabelColor} />
+                                                        <MultilineAxisLabel text={config.bottomLabel} x={midX} y={height - margins.bottom + 35} maxChars={isMobile ? 18 : 25} anchor="middle" alignmentMode="top-down" fontSize={isMobile ? 14 : 18} fill={config.axisLabelColor} />
+                                                        <MultilineAxisLabel text={config.leftLabel} x={margins.left - 20} y={midY} maxChars={isMobile ? 12 : 20} anchor="end" alignmentMode="middle" fontSize={isMobile ? 14 : 18} fill={config.axisLabelColor} />
+                                                        <MultilineAxisLabel text={config.rightLabel} x={width - margins.right + 20} y={midY} maxChars={isMobile ? 12 : 20} anchor="start" alignmentMode="middle" fontSize={isMobile ? 14 : 18} fill={config.axisLabelColor} />
+                                                    </g>
+                                                )}
+
+                                                <AnimatePresence>
+                                                {config.showLabels && data.map(point => {
+                                                    const cx = xScale(point.x); const cy = yScale(point.y);
+                                                    const labelWidth = point.label.length * 7 + 20;
+                                                    const labelPos = labelPositions[point.id] || { x: cx, y: cy + config.dotSize + 15 };
+                                                    if(cx < margins.left - 10 || cx > width-margins.right + 10 || cy < margins.top - 10 || cy > height-margins.bottom + 10) return null;
+                                                    return (
+                                                        <motion.g key={`label-${point.id}`} animate={{ x: labelPos.x, y: labelPos.y }} transition={{ type: "spring", stiffness: 200, damping: 20 }}>
+                                                            {(Math.abs(labelPos.y - cy) > config.dotSize + 20 || Math.abs(labelPos.x - cx) > 20) && (<line x1={0} y1={0} x2={cx - labelPos.x} y2={cy - labelPos.y} stroke="#cbd5e1" strokeWidth="1" />)}
+                                                            <rect x={-labelWidth/2} y={-12} width={labelWidth} height={24} rx={6} fill="white" stroke="#e2e8f0" strokeWidth="1" opacity="0.9" className="shadow-sm"/>
+                                                            <text x={0} y={5} textAnchor="middle" className="text-xs font-bold fill-slate-700" style={{fontSize:'11px',fontWeight:'bold',fontFamily:'Inter, sans-serif',pointerEvents:'none'}}>{point.label}</text>
+                                                        </motion.g>
+                                                    );
+                                                })}
+                                                </AnimatePresence>
+                                                <AnimatePresence>
+                                                    {data.map(point => {
+                                                        const cx = xScale(point.x); const cy = yScale(point.y);
+                                                        const isTiny = config.dotSize < 12;
+                                                        if(cx < margins.left - 10 || cx > width-margins.right + 10 || cy < margins.top - 10 || cy > height-margins.bottom + 10) return null;
+                                                        return (
+                                                            <motion.g key={`dot-${point.id}`} initial={{scale:0}} animate={{x:cx, y:cy, scale:draggedId===point.id?1.1:1, opacity:1}} transition={{type:"spring",stiffness:300,damping:20}}
+                                                                style={{cursor:draggedId===point.id?'grabbing':'grab'}} onPointerDown={e=>handlePointerDown(e,point.id)} onMouseEnter={e=>!draggedId&&setHoveredPoint({data:point,screenX:e.clientX,screenY:e.clientY})} onMouseLeave={()=>!draggedId&&setHoveredPoint(null)} onTouchStart={e=>{e.preventDefault(); handlePointerDown(e.touches[0], point.id)}} onTouchMove={e=>{if(draggedId){e.preventDefault(); handleSvgPointerMove(e.touches[0])}}} onTouchEnd={handleSvgPointerUp}>
+                                                                <circle r={config.dotSize} fill="transparent" filter="url(#dropShadow)"/>
+                                                                {isTiny ? (<circle r={config.dotSize} fill={point.color || "#6366f1"} stroke="white" strokeWidth="1" />) : (<><circle r={config.dotSize} fill="white" stroke={point.color||"#6366f1"} strokeWidth="4"/><circle r={config.dotSize-4} fill={point.img?`url(#img-${point.id})`:"#f1f5f9"}/>{!point.img && <text x="0" y="2" textAnchor="middle" dy="0.3em" className="fill-slate-300 text-[10px] font-black pointer-events-none uppercase">NO IMG</text>}</>)}
+                                                            </motion.g>
+                                                        );
+                                                    })}
+                                                </AnimatePresence>
+                                            </svg>
+                                        )}
+                                    </div>
+                                </div>
+                            </motion.div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+        const root = createRoot(document.getElementById('root'));
+        root.render(<ScatterBuilder />);
+    </script>
+</body>
+</html>
