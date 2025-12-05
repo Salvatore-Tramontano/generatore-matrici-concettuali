@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>ScatterBuilder Pro Adaptive v5.0 Mobile</title>
+    <title>Generatore di matrici concettuali</title>
     
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -68,7 +68,7 @@
             ChevronLeft, Check, Maximize2, 
             Move, ZoomIn, LayoutGrid, Type, ArrowUp, 
             ArrowDown, ArrowLeft, ArrowRight, Menu, Anchor, Palette,
-            Save, RotateCcw, Upload, FileJson, Eye, EyeOff
+            Save, RotateCcw, Upload, FileJson, Eye, EyeOff, Hash
         } from 'lucide-react';
 
         // --- HOOK: RESIZE OBSERVER STABILE ---
@@ -336,17 +336,40 @@
             const labelPositions = useLabelLayout(data, xScale, yScale, config.showLabels, config.dotSize, draggedId, width, height);
 
             const handlePointerDown = (e, pointId) => { e.preventDefault(); e.stopPropagation(); setDraggedId(pointId); setHoveredPoint(null); };
-            const handleSvgPointerMove = (e) => {
-                if (!draggedId) return;
-                const mouseX = e.nativeEvent.offsetX; 
-                const mouseY = e.nativeEvent.offsetY;
-                let newDataX = xScale.invert(mouseX); let newDataY = yScale.invert(mouseY);
-                newDataX = Math.max(config.minX, Math.min(config.maxX, newDataX)); newDataY = Math.max(config.minY, Math.min(config.maxY, newDataY));
-                setData(prev => prev.map(p => p.id === draggedId ? { ...p, x: Math.round(newDataX*10)/10, y: Math.round(newDataY*10)/10 } : p));
-            };
-            const handleSvgPointerUp = () => setDraggedId(null);
-            useEffect(() => { window.addEventListener('pointerup', handleSvgPointerUp); return () => window.removeEventListener('pointerup', handleSvgPointerUp); }, []);
             
+            // --- GESTIONE TRASCINAMENTO OTTIMIZZATA PER MOBILE ---
+            // Usa clientX/clientY e getBoundingClientRect per precisione massima su touch
+            const handleGlobalPointerMove = useCallback((clientX, clientY) => {
+                if (!draggedId || !svgRef.current) return;
+                
+                const rect = svgRef.current.getBoundingClientRect();
+                const mouseX = clientX - rect.left;
+                const mouseY = clientY - rect.top;
+
+                let newDataX = xScale.invert(mouseX); 
+                let newDataY = yScale.invert(mouseY);
+                
+                newDataX = Math.max(config.minX, Math.min(config.maxX, newDataX)); 
+                newDataY = Math.max(config.minY, Math.min(config.maxY, newDataY));
+                
+                setData(prev => prev.map(p => p.id === draggedId ? { ...p, x: Math.round(newDataX*10)/10, y: Math.round(newDataY*10)/10 } : p));
+            }, [draggedId, xScale, yScale, config.minX, config.maxX, config.minY, config.maxY]);
+
+            // Listener globali per il drag
+            useEffect(() => {
+                const onMove = (e) => handleGlobalPointerMove(e.clientX, e.clientY);
+                const onUp = () => setDraggedId(null);
+                
+                if (draggedId) {
+                    window.addEventListener('pointermove', onMove);
+                    window.addEventListener('pointerup', onUp);
+                }
+                return () => {
+                    window.removeEventListener('pointermove', onMove);
+                    window.removeEventListener('pointerup', onUp);
+                };
+            }, [draggedId, handleGlobalPointerMove]);
+
             const handleAddPoint = () => setData([...data, { id: Date.now(), x: 50, y: 50, label: "Nuovo", desc: "", color: "#6366f1", img: null }]);
             const handleUpdatePoint = (id, field, value) => setData(data.map(d => d.id === id ? { ...d, [field]: value } : d));
             const handleDeletePoint = (id) => setData(data.filter(d => d.id !== id));
@@ -519,6 +542,18 @@
                                                                     <input type="color" value={point.color} onChange={e=>handleUpdatePoint(point.id,'color',e.target.value)} className="w-5 h-5 rounded-full overflow-hidden border-none p-0 cursor-pointer shadow-sm"/>
                                                                 </div>
                                                                 <input type="text" value={point.desc} onChange={e=>handleUpdatePoint(point.id,'desc',e.target.value)} className="w-full text-xs text-slate-500 bg-slate-50 rounded px-2 py-1 border border-transparent focus:border-indigo-200 focus:bg-white outline-none transition" placeholder="Descrizione..."/>
+                                                                
+                                                                {/* NUOVO: COORDINATE MANUALI */}
+                                                                <div className="grid grid-cols-2 gap-2 pt-1">
+                                                                    <div className="flex items-center bg-slate-50 rounded px-2 py-1 border border-slate-100 focus-within:border-indigo-300 transition">
+                                                                        <span className="text-[9px] font-bold text-slate-400 mr-2 uppercase">X</span>
+                                                                        <input type="number" min={config.minX} max={config.maxX} value={point.x} onChange={e=>handleUpdatePoint(point.id,'x',Number(e.target.value))} className="w-full text-xs bg-transparent outline-none font-mono text-slate-600"/>
+                                                                    </div>
+                                                                    <div className="flex items-center bg-slate-50 rounded px-2 py-1 border border-slate-100 focus-within:border-indigo-300 transition">
+                                                                        <span className="text-[9px] font-bold text-slate-400 mr-2 uppercase">Y</span>
+                                                                        <input type="number" min={config.minY} max={config.maxY} value={point.y} onChange={e=>handleUpdatePoint(point.id,'y',Number(e.target.value))} className="w-full text-xs bg-transparent outline-none font-mono text-slate-600"/>
+                                                                    </div>
+                                                                </div>
                                                             </div>
                                                             <button onClick={()=>handleDeletePoint(point.id)} className="text-slate-300 hover:text-red-500 p-1 rounded hover:bg-red-50 transition"><X size={14}/></button>
                                                         </div>
@@ -564,7 +599,7 @@
                                 <div className="absolute inset-0 flex flex-col pointer-events-none">
                                     <div className="flex-1 w-full h-full relative">
                                         {width > 0 && height > 0 && (
-                                            <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} className="w-full h-full overflow-visible select-none pointer-events-auto" xmlns="http://www.w3.org/2000/svg" onPointerMove={handleSvgPointerMove} onPointerUp={handleSvgPointerUp} onPointerLeave={handleSvgPointerUp}>
+                                            <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} className="w-full h-full overflow-visible select-none pointer-events-auto touch-none" xmlns="http://www.w3.org/2000/svg">
                                                 <defs>
                                                     {data.map(p => (<pattern key={`pat-${p.id}`} id={`img-${p.id}`} height="100%" width="100%" patternContentUnits="objectBoundingBox">{p.img ? <image href={p.img} x="0" y="0" width="1" height="1" preserveAspectRatio="none"/> : <rect width="1" height="1" fill="#f1f5f9"/>}</pattern>))}
                                                     <filter id="dropShadow" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="4" stdDeviation="4" floodColor="#000" floodOpacity="0.1"/></filter>
@@ -631,7 +666,11 @@
                                                         if(cx < margins.left - 10 || cx > width-margins.right + 10 || cy < margins.top - 10 || cy > height-margins.bottom + 10) return null;
                                                         return (
                                                             <motion.g key={`dot-${point.id}`} initial={{scale:0}} animate={{x:cx, y:cy, scale:draggedId===point.id?1.1:1, opacity:1}} transition={{type:"spring",stiffness:300,damping:20}}
-                                                                style={{cursor:draggedId===point.id?'grabbing':'grab'}} onPointerDown={e=>handlePointerDown(e,point.id)} onMouseEnter={e=>!draggedId&&setHoveredPoint({data:point,screenX:e.clientX,screenY:e.clientY})} onMouseLeave={()=>!draggedId&&setHoveredPoint(null)} onTouchStart={e=>{e.preventDefault(); handlePointerDown(e.touches[0], point.id)}} onTouchMove={e=>{if(draggedId){e.preventDefault(); handleSvgPointerMove(e.touches[0])}}} onTouchEnd={handleSvgPointerUp}>
+                                                                style={{cursor:draggedId===point.id?'grabbing':'grab'}} 
+                                                                onPointerDown={e=>handlePointerDown(e,point.id)} 
+                                                                onMouseEnter={e=>!draggedId&&setHoveredPoint({data:point,screenX:e.clientX,screenY:e.clientY})} 
+                                                                onMouseLeave={()=>!draggedId&&setHoveredPoint(null)}
+                                                            >
                                                                 <circle r={config.dotSize} fill="transparent" filter="url(#dropShadow)"/>
                                                                 {isTiny ? (<circle r={config.dotSize} fill={point.color || "#6366f1"} stroke="white" strokeWidth="1" />) : (<><circle r={config.dotSize} fill="white" stroke={point.color||"#6366f1"} strokeWidth="4"/><circle r={config.dotSize-4} fill={point.img?`url(#img-${point.id})`:"#f1f5f9"}/>{!point.img && <text x="0" y="2" textAnchor="middle" dy="0.3em" className="fill-slate-300 text-[10px] font-black pointer-events-none uppercase">NO IMG</text>}</>)}
                                                             </motion.g>
