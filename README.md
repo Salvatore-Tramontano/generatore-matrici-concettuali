@@ -13,7 +13,7 @@ Immagini Personalizzate: Carica loghi o foto per ogni punto della matrice (con t
 
 Esportazione HD: Scarica il grafico finale come immagine .png ad alta risoluzione.
 
-Salvataggio Progetti: Salva il tuo lavoro in formato .json per riprenderlo in seguito.
+Salvataggio: Salva il tuo lavoro in formato .json per riprenderlo in seguito.
 
 100% Privacy: I dati rimangono nel tuo browser. Nulla viene inviato a server esterni.
 
