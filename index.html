@@ -315,8 +315,8 @@
                 }
 
                 // Logica standard ma ottimizzata per evitare lo schiacciamento su mobile
-                // Riduciamo il minimo hard-coded da 140 a 90 per schermi stretti
-                const minSide = isMobile ? 80 : 140; 
+                // Aumentato da 80 a 100 per garantire che le label lunghe (es. Natale) non vengano tagliate
+                const minSide = isMobile ? 100 : 140; 
                 const minTop = isMobile ? 90 : 130;
                 
                 const sideMargin = Math.min(Math.max(width * 0.15, minSide), 220);
@@ -639,8 +639,8 @@
                                                     <g>
                                                         <MultilineAxisLabel text={config.topLabel} x={midX} y={margins.top - 25} maxChars={isMobile ? 18 : 25} anchor="middle" alignmentMode="bottom-up" fontSize={isMobile ? 14 : 18} fill={config.axisLabelColor} />
                                                         <MultilineAxisLabel text={config.bottomLabel} x={midX} y={height - margins.bottom + 35} maxChars={isMobile ? 18 : 25} anchor="middle" alignmentMode="top-down" fontSize={isMobile ? 14 : 18} fill={config.axisLabelColor} />
-                                                        <MultilineAxisLabel text={config.leftLabel} x={margins.left - 20} y={midY} maxChars={isMobile ? 12 : 20} anchor="end" alignmentMode="middle" fontSize={isMobile ? 14 : 18} fill={config.axisLabelColor} />
-                                                        <MultilineAxisLabel text={config.rightLabel} x={width - margins.right + 20} y={midY} maxChars={isMobile ? 12 : 20} anchor="start" alignmentMode="middle" fontSize={isMobile ? 14 : 18} fill={config.axisLabelColor} />
+                                                        <MultilineAxisLabel text={config.leftLabel} x={margins.left - 8} y={midY} maxChars={isMobile ? 12 : 20} anchor="end" alignmentMode="middle" fontSize={isMobile ? 14 : 18} fill={config.axisLabelColor} />
+                                                        <MultilineAxisLabel text={config.rightLabel} x={width - margins.right + 8} y={midY} maxChars={isMobile ? 12 : 20} anchor="start" alignmentMode="middle" fontSize={isMobile ? 14 : 18} fill={config.axisLabelColor} />
                                                     </g>
                                                 )}
 
